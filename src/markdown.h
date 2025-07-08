@@ -5,89 +5,84 @@
 #include <vector>
 #include <map>
 #include <regex>
+#include <functional> // For std::function
 
-// Helper function to process inline Markdown (links, bold, italic, inline footnotes)
+// Define a struct to hold a regex and its replacement logic
+struct InlineRule {
+    std::regex pattern;
+    // A lambda function that takes a std::smatch and returns the replacement string
+    std::function<std::string(const std::smatch&)> replacement_formatter;
+};
+
+// Helper function to process inline Markdown (images, links, bold, italic, inline footnotes)
 std::string process_inline_markdown(std::string text) {
-    // --- Inline Footnote Reference Conversion ---
-    // Note: This helper might be called on content that doesn't have footnotes.
-    // If inline footnotes are primarily in main content, this step can be removed from here
-    // and kept only in the main processing loop where 'htmlContent' is processed.
-    // For now, keeping it here for robustness if footnotes could reference other footnotes.
-    std::regex inline_footnote_regex(R"(\[\^(\d+)\])");
-    std::string tempText = "";
-    auto words_begin = std::sregex_iterator(text.begin(), text.end(), inline_footnote_regex);
-    auto words_end = std::sregex_iterator();
+    // Define the order of inline processing.
+    // Order matters: More specific patterns (like images, inline footnotes)
+    // should generally come before more general ones (like links, bold, italic).
+    std::vector<InlineRule> rules = {
+            // Rule for Inline Footnote References: [^N] -> <sup><a href="#fnN" id="fnrefN">N</a></sup>
+            {std::regex(R"(\[\^(\d+)\])"),
+                    [](const std::smatch& match) {
+                        std::string num = match[1].str();
+                        return "<sup><a href=\"#fn" + num + "\" id=\"fnref" + num + "\">" + num + "</a></sup>";
+                    }},
+            // Rule for Images: ![alt text](url) -> <img src="url" alt="alt text">
+            {std::regex(R"(!\[(.*?)\]\((.+?)\))"),
+                    [](const std::smatch& match) {
+                        std::string alt = match[1].str();
+                        std::string url = match[2].str();
+                        return "<img src=\"" + url + "\" alt=\"" + alt + "\">";
+                    }},
+            // Rule for Links: [link text](url) -> <a href="url">link text</a>
+            {std::regex(R"(\[(.+?)\]\((.+?)\))"),
+                    [](const std::smatch& match) {
+                        std::string text = match[1].str();
+                        std::string url = match[2].str();
+                        return "<a href=\"" + url + "\">" + text + "</a>";
+                    }},
+            // Rule for Bold: **text** -> <strong>text</strong>
+            // Note: For bold/italic with regex, ensure non-greedy matching.
+            // Also, manually doing find/replace like before can sometimes be simpler for these.
+            // The regex `\*\*([^\*]+?)\*\*` is problematic if `*` can be inside.
+            // A more robust regex for **bold** would be `\*\*([^\*]+)\*\*` or more complex to handle nesting/escapes.
+            // For simple cases:
+            {std::regex(R"(\*\*([^\*]+?)\*\*)"), // Matches **text** but not **text*more**
+                    [](const std::smatch& match) {
+                        return "<strong>" + match[1].str() + "</strong>";
+                    }},
+            // Rule for Italic: *text* -> <em>text</em>
+            {std::regex(R"(\*([^\*]+?)\*)"), // Matches *text* but not *text**more*
+                    [](const std::smatch& match) {
+                        return "<em>" + match[1].str() + "</em>";
+                    }}
+    };
 
-    size_t last_pos = 0;
-    for (std::sregex_iterator i = words_begin; i != words_end; ++i) {
-        std::smatch match = *i;
-        std::string footnote_num = match[1].str();
-        tempText += text.substr(last_pos, match.position() - last_pos);
-        tempText += "<sup><a href=\"#fn" + footnote_num + "\" id=\"fnref" + footnote_num + "\">" + footnote_num + "</a></sup>";
-        last_pos = match.position() + match.length();
-    }
-    tempText += text.substr(last_pos);
-    text = tempText;
+    // Apply each rule sequentially
+    for (const auto& rule : rules) {
+        std::string current_text = "";
+        auto words_begin = std::sregex_iterator(text.begin(), text.end(), rule.pattern);
+        auto words_end = std::sregex_iterator();
 
-
-    // --- Link Conversion ---
-    std::regex link_regex(R"(\[(.+?)\]\((.+?)\))");
-
-    tempText = ""; // Reuse tempText for new replacements
-    words_begin = std::sregex_iterator(text.begin(), text.end(), link_regex);
-    words_end = std::sregex_iterator();
-    last_pos = 0;
-
-    for (std::sregex_iterator i = words_begin; i != words_end; ++i) {
-        std::smatch match = *i;
-        std::string link_text = match[1].str();
-        std::string link_url = match[2].str();
-
-        tempText += text.substr(last_pos, match.position() - last_pos);
-        tempText += "<a href=\"" + link_url + "\">" + link_text + "</a>";
-        last_pos = match.position() + match.length();
-    }
-    tempText += text.substr(last_pos);
-    text = tempText;
-
-    // --- Bold and Italic Conversion ---
-    size_t pos = 0;
-    while ((pos = text.find("**", pos)) != std::string::npos) {
-        size_t end_pos = text.find("**", pos + 2);
-        if (end_pos != std::string::npos) {
-            text.replace(end_pos, 2, "</strong>");
-            text.replace(pos, 2, "<strong>");
-            pos = end_pos + 9;
-        } else {
-            break;
+        size_t last_pos = 0;
+        for (std::sregex_iterator i = words_begin; i != words_end; ++i) {
+            std::smatch match = *i;
+            current_text += text.substr(last_pos, match.position() - last_pos);
+            current_text += rule.replacement_formatter(match); // Use the formatter lambda
+            last_pos = match.position() + match.length();
         }
-    }
-
-    pos = 0;
-    while ((pos = text.find("*", pos)) != std::string::npos) {
-        size_t end_pos = text.find("*", pos + 1);
-        if (end_pos != std::string::npos) {
-            if (end_pos != pos + 1 && (pos == 0 || text[pos - 1] != '*') && (end_pos + 1 == text.length() || text[end_pos + 1] != '*')) {
-                text.replace(end_pos, 1, "</em>");
-                text.replace(pos, 1, "<em>");
-                pos = end_pos + 5;
-            } else {
-                pos++;
-            }
-        } else {
-            break;
-        }
+        current_text += text.substr(last_pos); // Add remaining text
+        text = current_text; // Update text for the next rule
     }
 
     return text;
 }
 
 
-// Function to convert the entire Markdown content to HTML
+// Rest of the convert_markdown_to_html function remains the same
 std::string convert_markdown_to_html(const std::string& markdownContent) {
     // --- Footnote Extraction and Storage ---
     std::map<std::string, std::string> footnotes;
-    std::string contentWithoutFootnoteDefs; // Renamed for clarity: this holds content without *definitions*
+    std::string contentWithoutFootnoteDefs;
 
     std::regex footnote_def_regex(R"(^\[\^(\d+)\]:\s*(.*)$)");
 
@@ -97,7 +92,6 @@ std::string convert_markdown_to_html(const std::string& markdownContent) {
     while (std::getline(initialIss, line)) {
         std::smatch matches;
         if (std::regex_match(line, matches, footnote_def_regex)) {
-            // Store raw footnote content for now
             footnotes[matches[1].str()] = matches[2].str();
         } else {
             contentWithoutFootnoteDefs += line + "\n";
@@ -175,7 +169,7 @@ std::string convert_markdown_to_html(const std::string& markdownContent) {
         processedContent += "</ol>\n";
     }
 
-    std::string htmlContent = processedContent; // Now htmlContent holds processed lines without raw footnotes
+    std::string htmlContent = processedContent;
 
     // --- Apply Inline Markdown to the main content ---
     htmlContent = process_inline_markdown(htmlContent);
@@ -209,7 +203,6 @@ std::string convert_markdown_to_html(const std::string& markdownContent) {
         for (const auto& pair : footnotes) {
             std::string fn_num = pair.first;
             std::string fn_content = pair.second;
-            // IMPORTANT: Process the footnote content for inline markdown here!
             std::string processed_fn_content = process_inline_markdown(fn_content);
             finalHtmlMainContent += "<li id=\"fn" + fn_num + "\">" + processed_fn_content + " <a href=\"#fnref" + fn_num + "\" class=\"footnote-backref\">&#8617;</a></li>\n";
         }
