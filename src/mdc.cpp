@@ -4,10 +4,8 @@
 #include "libmain.h"
 #include "markdown.h"
 #include "read_lines.h"
-#include <algorithm>
 #include <complex>
 #include <map>
-
 
 void print_help() {
   std::cout << "mdc -i markdown.md > out.html" << std::endl;
