@@ -29,7 +29,7 @@ make
 
 ### #include "markdown.h"
 Using MDC in a project:
-```
+```c++
 # include "markdown.h"
   
   int main() {  
